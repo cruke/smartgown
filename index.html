@@ -92,11 +92,12 @@ const tgStatus = document.getElementById("tgStatus");
 const modeBadge= document.getElementById("modeBadge");
 
 /* ==== State ==== */
-let stream=null, track=null, scanning=false, audioCtx;
+let stream=null, track=null, audioCtx;
 let decoderRunning=false;
-const scannedByMode = { borrow:new Set(), return:new Set() };
-let lastFrameKey="", lastFrameTime=0;
 const codeReader = window.ZXING_Reader;
+const scannedByMode = { borrow:new Set(), return:new Set() };  // successful scans
+const pendingByMode = { borrow:new Set(), return:new Set() };  // in-flight sends
+let lastFrameKey="", lastFrameTime=0;
 
 /* ==== Mode + Mirror ==== */
 function getMode(){ return document.querySelector('input[name="mode"]:checked').value; }
@@ -206,30 +207,62 @@ function drawLabel(points,text,color){
   ctx.fillStyle=color;ctx.fillText(text,x,y-4);
 }
 
-/* ==== Detection ==== */
+/* ==== Detection (immediate block) ==== */
 async function handleDetection(text,points){
   const mode=getMode();
-  const isDupe=scannedByMode[mode].has(text);
-  const color=getComputedStyle(document.documentElement).getPropertyValue(isDupe?'--red':'--blue').trim();
+
+  // immediate duplicate blocking: pending or already scanned in this mode
+  const isPending = pendingByMode[mode].has(text);
+  const isScanned = scannedByMode[mode].has(text);
+
+  // color = red when pending OR scanned; blue otherwise
+  const color=getComputedStyle(document.documentElement)
+              .getPropertyValue((isPending||isScanned)?'--red':'--blue').trim();
   drawBox(points,color);
-  drawLabel(points,isDupe?`Duplicate in ${mode.toUpperCase()}`:text,color);
-  const key=mode+"||"+text;const now=Date.now();
-  if(key===lastFrameKey&&(now-lastFrameTime)<1200)return;
-  lastFrameKey=key;lastFrameTime=now;
-  if(isDupe&&preventDupesChk.checked){
-    statusLabel.textContent=`⚠️ Duplicate ignored (${mode.toUpperCase()})`;
+  drawLabel(points, (isPending ? `Sending… (${mode.toUpperCase()})`
+                                : isScanned ? `Duplicate in ${mode.toUpperCase()}`
+                                            : text), color);
+
+  // hard block: if it's already pending, do nothing
+  if (isPending) {
+    statusLabel.textContent = `⛔ Already sending this code in ${mode.toUpperCase()}`;
     return;
   }
+
+  // soft block: if it's already scanned and user wants to prevent duplicates
+  if (isScanned && preventDupesChk.checked) {
+    statusLabel.textContent = `⚠️ Duplicate ignored (${mode.toUpperCase()})`;
+    return;
+  }
+
+  // Additional small frame-level debounce to avoid rapid multi-calls
+  const key=mode+"||"+text;const now=Date.now();
+  if(key===lastFrameKey&&(now-lastFrameTime)<800) return;
+  lastFrameKey=key; lastFrameTime=now;
+
+  // mark as pending immediately to block further frames
+  pendingByMode[mode].add(text);
+
+  // proceed to send
   flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
   statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
   const snap=await captureSnapshot();
   const caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}\n🔗 [View Sheet](https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=0)`;
+
   try{
     const sheetRes=await sendToSheet(text,snap,mode);
     const tgRes=await sendToTelegram(snap,caption);
     statusLabel.textContent=(sheetRes.ok?"✅ Sheet ":"❌ Sheet ")+(tgRes.ok?"| ✅ Telegram":"| ❌ Telegram");
-    if(sheetRes.ok)scannedByMode[mode].add(text);
-  }catch(e){statusLabel.textContent="❌ "+(e.message||e);}
+
+    // success → move from pending → scanned
+    pendingByMode[mode].delete(text);
+    if (sheetRes.ok) scannedByMode[mode].add(text);
+
+  }catch(e){
+    // failure → allow retry
+    pendingByMode[mode].delete(text);
+    statusLabel.textContent="❌ "+(e.message||e);
+  }
 }
 
 /* ==== Capture ==== */
@@ -264,13 +297,22 @@ async function sendToTelegram(blob,caption){
 }
 
 /* ==== Test Buttons ==== */
+const pingBtn=document.getElementById("pingBtn");
 pingBtn.onclick=async()=>{statusLabel.textContent="🔄 Testing connection...";try{
   const r=await fetch(GAS_URL+"?action=ping");const t=await r.text();
   statusLabel.textContent=t.includes('"ok":true')?"🟢 Sheet OK":"🔴 Fail: "+t;
 }catch(e){statusLabel.textContent="🔴 "+e.message;}};
 
+const testBtn=document.getElementById("testBtn");
 testBtn.onclick=async()=>{
   const mode=getMode();
+  // simulate a code; also respects immediate-block logic via pending set
+  const fake="TEST001";
+  if (pendingByMode[mode].has(fake)) { statusLabel.textContent=`⛔ Already sending TEST in ${mode.toUpperCase()}`; return; }
+  flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(60);
+  statusLabel.textContent=`🧪 Test (${mode.toUpperCase()})...`;
+
+  // create a visual PNG so Telegram always accepts
   const c=document.createElement('canvas');c.width=640;c.height=360;
   const cx=c.getContext('2d');
   cx.fillStyle="#111";cx.fillRect(0,0,c.width,c.height);
@@ -278,14 +320,23 @@ testBtn.onclick=async()=>{
   cx.fillText(`TEST ${mode.toUpperCase()}`,20,50);
   cx.fillText(new Date().toLocaleString(),20,90);
   const blob=await new Promise(r=>c.toBlob(b=>r(b),"image/png",0.95));
+
+  // mark pending immediately
+  pendingByMode[mode].add(fake);
+
   const caption=`🧪 ${mode.toUpperCase()} Test\n• Time: ${new Date().toLocaleTimeString()}\n🔗 [View Sheet](https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=0)`;
-  statusLabel.textContent=`🧪 Test (${mode.toUpperCase()})...`;
-  const s=await sendToSheet("TEST001",blob,mode);
+  const s=await sendToSheet(fake,blob,mode);
   const t=await sendToTelegram(blob,caption);
+  // move pending→scanned on success; else clear pending
+  pendingByMode[mode].delete(fake);
+  if (s.ok) scannedByMode[mode].add(fake);
   statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
 };
 
 /* ==== Bindings ==== */
+const startBtn=document.getElementById("startBtn");
+const stopBtn=document.getElementById("stopBtn");
+const torchBtn=document.getElementById("torchBtn");
 startBtn.onclick=start;
 stopBtn.onclick=stop;
 torchBtn.onclick=toggleTorch;
