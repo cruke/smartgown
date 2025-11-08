@@ -24,6 +24,7 @@ legend{font-size:14px;color:var(--accent)}
 #view{display:block;width:100%;height:auto}
 #overlay{position:absolute;left:0;top:0;width:100%;height:auto;pointer-events:none}
 #statusLabel{text-align:center;margin-top:8px;font-size:15px;color:var(--accent)}
+#summaryLine{text-align:center;margin-top:10px;font-size:16px;color:#9fe8a3;font-weight:500;}
 .badge{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:999px;font-size:12px}
 </style>
 
@@ -61,6 +62,7 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
   <canvas id="overlay"></canvas>
 </div>
 <div id="statusLabel">Ready.</div>
+<div id="summaryLine"></div>
 </main>
 
 <script type="module">
@@ -68,7 +70,6 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
 const GAS_URL  = "https://script.google.com/macros/s/AKfycbyJifwYjoBeZ0SmFc7F7ENJCQfTuquT6QVZHV4aCEfamgFQmtED78IWLeOqSPnXGCo/exec";
 const BOT_TOKEN= "121011557:AAHE32VqMkQ8AnnXuDAlLXZn6Ybg7mXpyMo";
 const CHAT_ID  = "44305665";
-const SHEET_ID = "1dnUWOCJXYEpM8FAajooiub67tyS-v5xy1YJywB4L5To";
 const BLOCK_MS = 5000;
 
 /* ==== DOM ==== */
@@ -80,10 +81,10 @@ const testBtn=document.getElementById("testBtn");
 const beepChk=document.getElementById("beepChk"), vibrateChk=document.getElementById("vibrateChk");
 const mirrorChk=document.getElementById("mirrorChk"), preventDupesChk=document.getElementById("preventDupesChk");
 const statusLabel=document.getElementById("statusLabel"), tgStatus=document.getElementById("tgStatus");
-const modeBadge=document.getElementById("modeBadge");
+const modeBadge=document.getElementById("modeBadge"), summaryLine=document.getElementById("summaryLine");
 
 /* ==== STATE ==== */
-let stream=null, track=null, facing="environment"; // fixed to environment (no switch button)
+let stream=null, track=null, facing="environment";
 let decoderRunning=false, renderRunning=false, audioCtx;
 let vw=0,vh=0,cropY=0,cropH=0;
 const codeReader=window.ZXING_Reader;
@@ -152,7 +153,7 @@ async function handleDet(text,points){
  try{
    const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
    statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
-   if(s.ok)scannedByMode[mode].add(text);
+   if(s.ok){scannedByMode[mode].add(text);await updateSummaryFromSheet(text,mode);}
  }catch(e){statusLabel.textContent="❌ "+e.message;}
 }
 
@@ -164,7 +165,6 @@ function blobToDataURL(b){return new Promise(r=>{const f=new FileReader();f.onlo
 
 /* ==== Network ==== */
 async function sendSheet(id,blob,mode){
-  // normal path (scans): append/update via Apps Script
   const img=blob?await blobToDataURL(blob):"";
   const body={mode,id,qr:id,url:location.href,image:img};
   const r=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(body)});
@@ -183,26 +183,35 @@ async function sendTg(blob,caption){
 testBtn.onclick=async()=>{
   statusLabel.textContent="🔄 Testing system...";
   try{
-    // 1) capture PNG snapshot
     const blob=await captureSnap();
-
-    // 2) ping Apps Script only (no append)
     let sheetOk=false;
     try{
       const r=await fetch(GAS_URL+"?action=ping",{method:"GET"});
-      const txt=await r.text();
-      try{ const j=JSON.parse(txt); sheetOk=!!j.ok; }catch{ sheetOk=/"ok"\s*:\s*true/.test(txt); }
-    }catch{ sheetOk=false; }
-
-    // 3) Telegram test send with snapshot
+      const txt=await r.text();try{const j=JSON.parse(txt);sheetOk=!!j.ok;}catch{sheetOk=/"ok"\s*:\s*true/.test(txt);}
+    }catch{sheetOk=false;}
     const cap=`🧪 System Test\n• Time: ${new Date().toLocaleString()}\n• Note: Sheet ping only (no append)`;
     const tg=await sendTg(blob,cap);
-
     statusLabel.textContent=(sheetOk?"🟢 Sheet OK ":"🔴 Sheet Fail ")+(tg.ok?"| 🟢 Telegram OK":"| 🔴 Telegram Fail");
-  }catch(e){
-    statusLabel.textContent="❌ "+e.message;
-  }
+  }catch(e){statusLabel.textContent="❌ "+e.message;}
 };
+
+/* ==== Fetch Name & Update Summary ==== */
+async function updateSummaryFromSheet(id, mode){
+  try{
+    const r=await fetch(`${GAS_URL}?action=getlatest&id=${encodeURIComponent(id)}`);
+    const j=await r.json();
+    if(j.ok && j.row){
+      const personName=j.row.name||"Unknown";
+      const now=new Date().toLocaleString();
+      const action=mode.toUpperCase();
+      summaryLine.innerHTML=`${personName} (${id}) <b>${action}ED</b> a robe at ${now}`;
+    } else {
+      summaryLine.textContent=`(${id}) ${mode.toUpperCase()} completed.`;
+    }
+  }catch{
+    summaryLine.textContent=`(${id}) ${mode.toUpperCase()} completed.`;
+  }
+}
 
 /* ==== Bindings ==== */
 startBtn.onclick=start;stopBtn.onclick=stop;torchBtn.onclick=toggleTorch;
