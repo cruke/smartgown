@@ -27,7 +27,6 @@ legend{font-size:14px;color:var(--accent)}
 .badge{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:999px;font-size:12px}
 </style>
 
-<!-- ZXing -->
 <script type="module">
 import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/+esm";
 window.ZXING_Reader = new BrowserMultiFormatReader();
@@ -37,10 +36,9 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
 <header>🎓 Smart Convocation Robe Borrowing System</header>
 <main>
 <div>
-  <button id="startBtn">Start</button>
+  <button id="startBtn">Start / Switch Camera</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="torchBtn" disabled>Torch</button>
-  <button id="switchBtn">Switch Camera</button>
   <button id="testBtn">Test System</button>
   <label><input type="checkbox" id="beepChk" checked> Beep</label>
   <label><input type="checkbox" id="vibrateChk" checked> Vibrate</label>
@@ -76,16 +74,16 @@ const BLOCK_MS = 5000;
 const video=document.getElementById("video"), view=document.getElementById("view"), vctx=view.getContext("2d");
 const overlay=document.getElementById("overlay"), ctx=overlay.getContext("2d");
 const startBtn=document.getElementById("startBtn"), stopBtn=document.getElementById("stopBtn");
-const torchBtn=document.getElementById("torchBtn"), switchBtn=document.getElementById("switchBtn");
-const testBtn=document.getElementById("testBtn");
+const torchBtn=document.getElementById("torchBtn"), testBtn=document.getElementById("testBtn");
 const beepChk=document.getElementById("beepChk"), vibrateChk=document.getElementById("vibrateChk");
 const mirrorChk=document.getElementById("mirrorChk"), preventDupesChk=document.getElementById("preventDupesChk");
 const statusLabel=document.getElementById("statusLabel"), tgStatus=document.getElementById("tgStatus");
 const modeBadge=document.getElementById("modeBadge");
 
 /* ==== STATE ==== */
-let stream=null, track=null, facing="environment";
-let decoderRunning=false, renderRunning=false, audioCtx;
+let stream=null, track=null, audioCtx;
+let decoderRunning=false, renderRunning=false;
+let devices=[], camIndex=0;
 let vw=0,vh=0,cropY=0,cropH=0;
 const codeReader=window.ZXING_Reader;
 const scannedByMode={borrow:new Set(),return:new Set()}, processedAt=new Map();
@@ -100,116 +98,118 @@ function beep(){if(!beepChk.checked)return;audioCtx??=new (window.AudioContext||
 function flash(){document.body.style.background="#334";setTimeout(()=>document.body.style.background="#0f172a",150);}
 function keyFor(m,t){return`${m}||${t}`;}function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
 
-/* ==== Camera ==== */
-async function start(){
- stop();
- try{
-   stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}});
-   video.srcObject=stream;await video.play();track=stream.getVideoTracks()[0];
-   torchBtn.disabled=!track.getCapabilities?.().torch;
-   startBtn.disabled=true;stopBtn.disabled=false;updateSizes();startDecode();startRender();
-   statusLabel.textContent="Camera started.";
- }catch(e){statusLabel.textContent=e.message;}
+/* ==== Camera (Unified Start / Switch) ==== */
+async function initCameras(){
+  try{
+    const all=await navigator.mediaDevices.enumerateDevices();
+    devices=all.filter(d=>d.kind==="videoinput");
+    if(!devices.length)throw new Error("No cameras detected");
+  }catch(e){statusLabel.textContent="❌ "+e.message;}
 }
-function stop(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
- startBtn.disabled=false;stopBtn.disabled=true;torchBtn.disabled=true;
- stopDecode();stopRender();vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);}
-async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch(e){console.warn(e);}}
-switchBtn.onclick=()=>{facing=(facing==="environment")?"user":"environment";start();};
 
-/* ==== Sizing ==== */
+async function startOrSwitchCamera(){
+  stop();
+  try{
+    if(!devices.length)await initCameras();
+    const deviceId=devices[camIndex%devices.length].deviceId;
+    const label=devices[camIndex%devices.length].label||`Camera ${camIndex+1}`;
+    camIndex=(camIndex+1)%devices.length;
+    stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:deviceId}}});
+    video.srcObject=stream;await video.play();
+    track=stream.getVideoTracks()[0];
+    torchBtn.disabled=!track.getCapabilities?.().torch;
+    stopBtn.disabled=false;
+    startBtn.textContent=devices.length>1?"Switch Camera":"Start Camera";
+    updateSizes();
+    startDecode();
+    startRender();
+    statusLabel.textContent=`📷 Active: ${label}`;
+  }catch(e){statusLabel.textContent="⚠️ "+e.message;}
+}
+
+function stop(){
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  stopDecode();stopRender();
+  vctx.clearRect(0,0,view.width,view.height);
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  stopBtn.disabled=true;
+  startBtn.textContent="Start / Switch Camera";
+}
+
+/* ==== Torch ==== */
+async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch(e){console.warn(e);}}
+
+/* ==== Sizing & Render ==== */
 function updateSizes(){vw=video.videoWidth||640;vh=video.videoHeight||480;cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
- view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;view.style.width="100%";overlay.style.width="100%";}
+view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;}
 video.addEventListener('loadedmetadata',updateSizes);
 
-/* ==== Render ==== */
 function startRender(){if(renderRunning)return;renderRunning=true;(function loop(){if(!renderRunning)return;requestAnimationFrame(loop);
- if(!vw||!vh)return;vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);vctx.restore();
- ctx.clearRect(0,0,overlay.width,overlay.height);
- if(lastDet&&(performance.now()-lastDetTime)<200)drawDet(lastDet);})();}function stopRender(){renderRunning=false;}
+if(!vw||!vh)return;vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);vctx.restore();
+ctx.clearRect(0,0,overlay.width,overlay.height);
+if(lastDet&&(performance.now()-lastDetTime)<200)drawDet(lastDet);})();}
+function stopRender(){renderRunning=false;}
 function mapPoint(p){let x=p.getX?p.getX():p.x,y=p.getY?p.getY():p.y;if(mirrorChk.checked)x=vw-x;y-=cropY;return{x,y};}
 function drawDet(det){const pts=det.points.map(mapPoint).filter(p=>p.y>=0&&p.y<=cropH);if(!pts.length)return;
- let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
- const pad=20,x=Math.max(0,minX-pad),y=Math.max(0,minY-pad),w=Math.min(overlay.width,maxX+pad)-x,h=Math.min(overlay.height,maxY+pad)-y;
- ctx.lineWidth=4;ctx.strokeStyle=det.color;ctx.strokeRect(x,y,w,h);ctx.font="16px system-ui";const tw=ctx.measureText(det.label).width;ctx.fillStyle="rgba(0,0,0,0.6)";
- ctx.fillRect(x-4,Math.max(0,y-24),tw+10,20);ctx.fillStyle=det.color;ctx.fillText(det.label,x,y-8);}
+let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
+const pad=20,x=Math.max(0,minX-pad),y=Math.max(0,minY-pad),w=Math.min(overlay.width,maxX+pad)-x,h=Math.min(overlay.height,maxY+pad)-y;
+ctx.lineWidth=4;ctx.strokeStyle=det.color;ctx.strokeRect(x,y,w,h);
+ctx.font="16px system-ui";const tw=ctx.measureText(det.label).width;ctx.fillStyle="rgba(0,0,0,0.6)";ctx.fillRect(x-4,Math.max(0,y-24),tw+10,20);
+ctx.fillStyle=det.color;ctx.fillText(det.label,x,y-8);}
 
 /* ==== Decode ==== */
 function startDecode(){if(decoderRunning)return;decoderRunning=true;codeReader.decodeFromVideoDevice(null,video,(res,err,ctrl)=>{
- if(!decoderRunning){ctrl?.stop();return;}if(res){handleDet(res.getText?res.getText():res.text,res.getResultPoints?res.getResultPoints():res.resultPoints||[]);}});}
+if(!decoderRunning){ctrl?.stop();return;}if(res){handleDet(res.getText?res.getText():res.text,res.getResultPoints?res.getResultPoints():res.resultPoints||[]);}});}
 function stopDecode(){decoderRunning=false;try{codeReader.reset();}catch{}}
 
 /* ==== Detection ==== */
 async function handleDet(text,points){
- const mode=getMode(),recent=isBlocked(mode,text),dupe=scannedByMode[mode].has(text);
- const color=getComputedStyle(document.documentElement).getPropertyValue((recent||dupe)?'--red':'--blue').trim();
- const label=recent?`Blocked ${mode}`:(dupe?`Duplicate ${mode}`:text);
- lastDet={points,color,label};lastDetTime=performance.now();
- const key=keyFor(mode,text),now=Date.now();if(key===lastFrameKey&&(now-lastFrameTime)<1200)return;lastFrameKey=key;lastFrameTime=now;
- if(recent){statusLabel.textContent=`⛔ Blocked (${mode})`;return;}
- if(preventDupesChk.checked)processedAt.set(key,now);
- flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
- statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
- const snap=await captureSnap(),caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
- try{
-   const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
-   statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
-   if(s.ok)scannedByMode[mode].add(text);
- }catch(e){statusLabel.textContent="❌ "+e.message;}
+const mode=getMode(),recent=isBlocked(mode,text),dupe=scannedByMode[mode].has(text);
+const color=getComputedStyle(document.documentElement).getPropertyValue((recent||dupe)?'--red':'--blue').trim();
+const label=recent?`Blocked ${mode}`:(dupe?`Duplicate ${mode}`:text);
+lastDet={points,color,label};lastDetTime=performance.now();
+const key=keyFor(mode,text),now=Date.now();if(key===lastFrameKey&&(now-lastFrameTime)<1200)return;lastFrameKey=key;lastFrameTime=now;
+if(recent){statusLabel.textContent=`⛔ Blocked (${mode})`;return;}
+if(preventDupesChk.checked)processedAt.set(key,now);
+flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
+statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
+const snap=await captureSnap(),caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
+try{
+const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
+statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
+if(s.ok)scannedByMode[mode].add(text);
+}catch(e){statusLabel.textContent="❌ "+e.message;}
 }
 
 /* ==== Capture ==== */
 async function captureSnap(){const c=document.createElement('canvas');c.width=view.width;c.height=view.height;const cx=c.getContext('2d');
- if(mirrorChk.checked){cx.translate(c.width,0);cx.scale(-1,1);}cx.drawImage(video,0,cropY,vw,cropH,0,0,c.width,c.height);
- return new Promise(r=>c.toBlob(b=>r(b),'image/png',0.95));}
+if(mirrorChk.checked){cx.translate(c.width,0);cx.scale(-1,1);}cx.drawImage(video,0,cropY,vw,cropH,0,0,c.width,c.height);
+return new Promise(r=>c.toBlob(b=>r(b),'image/png',0.95));}
 function blobToDataURL(b){return new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b);});}
 
 /* ==== Network ==== */
-async function sendSheet(id,blob,mode){
-  // normal path (scans): append as before
-  const img=blob?await blobToDataURL(blob):"";
-  const body={mode,id,qr:id,url:location.href,image:img};
-  const r=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(body)});
-  const t=await r.text();try{return JSON.parse(t);}catch{return{ok:false,error:t}};
-}
-async function sendTg(blob,caption){
-  try{
-    tgStatus.textContent="Telegram: sending...";
-    const fd=new FormData();fd.append("chat_id",CHAT_ID);fd.append("caption",caption);fd.append("photo",blob,"frame.png");
-    const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,{method:"POST",body:fd});
-    const j=await r.json();tgStatus.textContent=j.ok?"Telegram: ✅":"Telegram: ❌";return j;
-  }catch(e){tgStatus.textContent="Telegram: ❌";return{ok:false,error:e.message};}
-}
+async function sendSheet(id,blob,mode){const img=blob?await blobToDataURL(blob):"";const body={mode,id,qr:id,url:location.href,image:img};
+const r=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(body)});const t=await r.text();try{return JSON.parse(t);}catch{return{ok:false,error:t}};}
+async function sendTg(blob,caption){try{tgStatus.textContent="Telegram: sending...";const fd=new FormData();fd.append("chat_id",CHAT_ID);fd.append("caption",caption);fd.append("photo",blob,"frame.png");
+const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,{method:"POST",body:fd});const j=await r.json();tgStatus.textContent=j.ok?"Telegram: ✅":"Telegram: ❌";return j;}catch(e){tgStatus.textContent="Telegram: ❌";return{ok:false,error:e.message};}}
 
-/* ==== Test System (NO APPEND TO SHEET) ==== */
+/* ==== Test System ==== */
 testBtn.onclick=async()=>{
-  statusLabel.textContent="🔄 Testing system...";
-  try{
-    // 1) capture PNG snapshot
-    const blob=await captureSnap();
-
-    // 2) ping Apps Script only (no append)
-    let sheetOk=false;
-    try{
-      const r=await fetch(GAS_URL+"?action=ping",{method:"GET"});
-      const txt=await r.text();
-      try{
-        const j=JSON.parse(txt); sheetOk=!!j.ok;
-      }catch{ sheetOk = /"ok"\s*:\s*true/.test(txt); }
-    }catch{ sheetOk=false; }
-
-    // 3) Telegram test send with snapshot
-    const cap=`🧪 System Test\n• Time: ${new Date().toLocaleString()}\n• Note: Sheet ping only (no append)`;
-    const tg=await sendTg(blob,cap);
-
-    statusLabel.textContent=(sheetOk?"🟢 Sheet OK ":"🔴 Sheet Fail ")+(tg.ok?"| 🟢 Telegram OK":"| 🔴 Telegram Fail");
-  }catch(e){
-    statusLabel.textContent="❌ "+e.message;
-  }
+statusLabel.textContent="🔄 Testing system...";
+try{
+const blob=await captureSnap();
+let sheetOk=false;
+try{const r=await fetch(GAS_URL+"?action=ping");const txt=await r.text();sheetOk=/\"ok\"\s*:\s*true/.test(txt);}catch{sheetOk=false;}
+const cap=`🧪 System Test\n• Time: ${new Date().toLocaleString()}\n• Note: Sheet ping only (no append)`;
+const tg=await sendTg(blob,cap);
+statusLabel.textContent=(sheetOk?"🟢 Sheet OK ":"🔴 Sheet Fail ")+(tg.ok?"| 🟢 Telegram OK":"| 🔴 Telegram Fail");
+}catch(e){statusLabel.textContent="❌ "+e.message;}
 };
 
-/* ==== Bindings ==== */
-startBtn.onclick=start;stopBtn.onclick=stop;torchBtn.onclick=toggleTorch;
+/* ==== Bind ==== */
+startBtn.onclick=startOrSwitchCamera;
+stopBtn.onclick=stop;
+torchBtn.onclick=toggleTorch;
 </script>
 </body>
 </html>
