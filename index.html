@@ -3,94 +3,293 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>QR Scanner → Google Sheet (Auto Mode)</title>
+<title>Smart Convocation Robe Borrowing System</title>
 <style>
-body{margin:0;background:#0f172a;color:#e2e8f0;font-family:system-ui}
-header{padding:12px 16px;border-bottom:1px solid #1f2937}
-main{padding:16px;max-width:900px;margin:auto}
-button{background:#111827;color:#e2e8f0;border:1px solid #374151;border-radius:8px;
-padding:10px 16px;font-size:16px;margin-right:6px;cursor:pointer}
+:root { --bg:#0f172a; --fg:#e2e8f0; --accent:#22d3ee; --blue:#22d3ee; --red:#ef4444; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif}
+header{
+  position:sticky;top:0;z-index:999;
+  padding:14px 16px;
+  background:#111827;
+  border-bottom:2px solid var(--accent);
+  text-align:center;
+  font-size:20px;
+  font-weight:600;
+  color:var(--accent);
+}
+main{padding:12px 16px;max-width:900px;margin:auto}
+button{background:#111827;color:var(--fg);border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+label{margin-right:10px}
+fieldset{border:1px solid #334155;padding:8px 12px;border-radius:8px;margin-top:8px}
+legend{font-size:14px;color:var(--accent)}
 #frameWrap{position:relative;border:1px solid #334155;border-radius:12px;overflow:hidden;background:#000;margin:10px 0}
-#video{position:absolute;width:100%;height:auto;opacity:0;pointer-events:none}
-#overlay{display:block;width:100%;height:auto}
-#flash{position:absolute;inset:0;background:white;opacity:0;transition:opacity .2s ease;border-radius:12px}
-#status{text-align:center;margin-top:6px;font-size:15px;color:#22d3ee}
+#video{width:100%;display:block;transition:transform .3s ease;}
+#overlay{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+#statusLabel{text-align:center;margin-top:8px;font-size:15px;color:var(--accent)}
+.badge{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:999px;font-size:12px}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+
+<!-- ZXing for QR + 1D barcodes -->
+<script type="module" id="zxing-import">
+import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/+esm";
+window.ZXING_Reader = new BrowserMultiFormatReader();
+</script>
 </head>
 <body>
-<header><strong>QR Scanner → Sheet (Auto)</strong></header>
+<header>🎓 Smart Convocation Robe Borrowing System</header>
 <main>
-<button id="startBtn">Start Camera</button>
-<button id="stopBtn" disabled>Stop</button>
-<div id="frameWrap">
-  <video id="video" playsinline autoplay muted></video>
-  <canvas id="overlay"></canvas>
-  <div id="flash"></div>
+<div>
+  <button id="startBtn">Start</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="torchBtn" disabled>Torch</button>
+  <button id="testBtn">Test Simulation</button>
+  <button id="pingBtn">Test Connection</button>
+  <label><input type="checkbox" id="beepChk" checked> Beep</label>
+  <label><input type="checkbox" id="vibrateChk" checked> Vibrate</label>
+  <label><input type="checkbox" id="mirrorChk"> Mirror camera view</label>
+  <label><input type="checkbox" id="preventDupesChk" checked> Prevent duplicate send</label>
+  <span id="tgStatus" style="margin-left:10px">Telegram: idle</span>
 </div>
-<div id="status">Waiting for camera…</div>
-</main>
-<script>
-const GAS_URL="https://script.google.com/macros/s/REPLACE_WITH_YOUR_EXEC_URL/exec";
-const video=document.getElementById('video'),overlay=document.getElementById('overlay'),
-ctx=overlay.getContext('2d'),startBtn=document.getElementById('startBtn'),
-stopBtn=document.getElementById('stopBtn'),flash=document.getElementById('flash'),
-status=document.getElementById('status');let stream=null,scan=true,crop={};
-const snap=document.createElement('canvas'),snapCtx=snap.getContext('2d');
 
-async function startCam(){
- stopCam();
- try{
-  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-  video.srcObject=stream;await video.play();scan=true;startBtn.disabled=true;stopBtn.disabled=false;
-  layout();loop();
- }catch(e){status.textContent="Camera error "+e.message;}
+<fieldset>
+  <legend>Mode Selection</legend>
+  <label><input type="radio" name="mode" value="borrow" checked> Borrow</label>
+  <label><input type="radio" name="mode" value="return"> Return</label>
+</fieldset>
+
+<div id="frameWrap">
+  <div id="modeBadge" class="badge">Mode: BORROW</div>
+  <video id="video" playsinline></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="statusLabel">Ready.</div>
+</main>
+
+<script type="module">
+/* ==== CONFIG ==== */
+const GAS_URL  = "https://script.google.com/macros/s/AKfycbyJifwYjoBeZ0SmFc7F7ENJCQfTuquT6QVZHV4aCEfamgFQmtED78IWLeOqSPnXGCo/exec";
+const BOT_TOKEN= "121011557:AAHE32VqMkQ8AnnXuDAlLXZn6Ybg7mXpyMo";
+const CHAT_ID  = "44305665";
+const SHEET_ID = "1dnUWOCJXYEpM8FAajooiub67tyS-v5xy1YJywB4L5To";
+
+/* ==== DOM ==== */
+const video   = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const ctx     = overlay.getContext("2d");
+const startBtn= document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const torchBtn= document.getElementById("torchBtn");
+const testBtn = document.getElementById("testBtn");
+const pingBtn = document.getElementById("pingBtn");
+const beepChk = document.getElementById("beepChk");
+const vibrateChk=document.getElementById("vibrateChk");
+const mirrorChk= document.getElementById("mirrorChk");
+const preventDupesChk=document.getElementById("preventDupesChk");
+const statusLabel=document.getElementById("statusLabel");
+const tgStatus = document.getElementById("tgStatus");
+const modeBadge= document.getElementById("modeBadge");
+
+/* ==== State ==== */
+let stream=null, track=null, scanning=false, audioCtx;
+let decoderRunning=false;
+const scannedByMode = { borrow:new Set(), return:new Set() };
+let lastFrameKey="", lastFrameTime=0;
+const codeReader = window.ZXING_Reader;
+
+/* ==== Mode + Mirror ==== */
+function getMode(){ return document.querySelector('input[name="mode"]:checked').value; }
+document.querySelectorAll('input[name="mode"]').forEach(r=>{
+  r.addEventListener('change',()=>{ modeBadge.textContent="Mode: "+getMode().toUpperCase(); });
+});
+mirrorChk.addEventListener("change", ()=>{
+  video.style.transform = mirrorChk.checked ? "scaleX(-1)" : "scaleX(1)";
+});
+
+/* ==== Feedback ==== */
+function beep(){
+  if(!beepChk.checked) return;
+  audioCtx ??= new (window.AudioContext||window.webkitAudioContext)();
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+  o.type="sine"; o.frequency.value=880; o.connect(g); g.connect(audioCtx.destination);
+  o.start(); setTimeout(()=>o.stop(),100);
 }
-function stopCam(){scan=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
- startBtn.disabled=false;stopBtn.disabled=true;}
-function layout(){
- const vw=video.videoWidth,vh=video.videoHeight;if(!vw||!vh)return;
- const segH=vh/3,ar=segH/vw,cw=overlay.clientWidth||640,ch=Math.round(cw*ar);
- overlay.width=cw;overlay.height=ch;snap.width=cw;snap.height=ch;
- crop={sx:0,sy:Math.floor(vh/3),sw:vw,sh:Math.floor(vh/3)};
+function flash(){ document.body.style.background="#334"; setTimeout(()=>document.body.style.background="#0f172a",150); }
+
+/* ==== Camera ==== */
+async function start(){
+  stop();
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal:"environment" } } });
+    video.srcObject = stream;
+    await video.play();
+    track = stream.getVideoTracks()[0];
+    torchBtn.disabled = !track.getCapabilities?.().torch;
+    startBtn.disabled = true; stopBtn.disabled = false;
+    sizingSync();
+    startDecodingLoop();
+    statusLabel.textContent = "Camera started.";
+  }catch(e){
+    statusLabel.textContent = e.message;
+  }
 }
-function flashFx(){flash.style.opacity=1;setTimeout(()=>flash.style.opacity=0,150);}
-function loop(){
- if(!scan)return;requestAnimationFrame(loop);
- if(video.readyState!==video.HAVE_ENOUGH_DATA)return;
- layout();const {sx,sy,sw,sh}=crop;
- ctx.drawImage(video,sx,sy,sw,sh,0,0,overlay.width,overlay.height);
- const img=ctx.getImageData(0,0,overlay.width,overlay.height);
- const qr=jsQR(img.data,img.width,img.height,{inversionAttempts:"dontInvert"});
- if(qr){ctx.beginPath();ctx.moveTo(qr.location.topLeftCorner.x,qr.location.topLeftCorner.y);
- ctx.lineTo(qr.location.topRightCorner.x,qr.location.topRightCorner.y);
- ctx.lineTo(qr.location.bottomRightCorner.x,qr.location.bottomRightCorner.y);
- ctx.lineTo(qr.location.bottomLeftCorner.x,qr.location.bottomLeftCorner.y);
- ctx.closePath();ctx.lineWidth=4;ctx.strokeStyle="#22d3ee";ctx.stroke();
- handleResult(qr.data);}
+function stop(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  startBtn.disabled=false; stopBtn.disabled=true; torchBtn.disabled=true;
+  stopDecodingLoop();
+  ctx.clearRect(0,0,overlay.width,overlay.height);
 }
-async function handleResult(text){
- scan=false;flashFx();status.textContent="⏳ Sending to server (Auto)…";
- const blob=await capturePNG(text);
- const [id,name='',info='']=text.split('|'); // adjust parsing as needed
- const resp=await sendAuto({id:id||text,name,info,qr:text,blob});
- status.textContent=resp.ok?`✅ AUTO → ${resp.action.toUpperCase()}`:`❌ ${resp.error||'Error'}`;
- setTimeout(()=>scan=true,1500);
+async function toggleTorch(){
+  if(!track) return;
+  const caps = track.getCapabilities?.() || {};
+  if(!caps.torch) return;
+  const cur = track.getConstraints().torch;
+  try{ await track.applyConstraints({ advanced:[{ torch: !cur }] }); }catch(e){ console.warn(e); }
 }
-function capturePNG(text){return new Promise(r=>{
- const {sx,sy,sw,sh}=crop;snapCtx.drawImage(video,sx,sy,sw,sh,0,0,snap.width,snap.height);
- snapCtx.font="16px system-ui";snapCtx.fillStyle="rgba(0,0,0,.5)";
- snapCtx.fillRect(0,0,snap.width,26);snapCtx.fillStyle="#22d3ee";
- snapCtx.fillText(text,10,18);snap.toBlob(b=>r(b),"image/png",0.95);
-});}
-function blobToDataURL(blob){return new Promise(res=>{
- const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob);});}
-async function sendAuto({id,name,info,qr,blob}){
- const img=blob?await blobToDataURL(blob):"";const body={mode:"auto",id,name,info,qr,url:location.href,image:img};
- const res=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
- return res.json();
+
+/* ==== ZXing decode loop ==== */
+function startDecodingLoop(){
+  if(decoderRunning) return;
+  decoderRunning = true;
+  sizingSync();
+  codeReader.decodeFromVideoDevice(null, video, (result, err, controls)=>{
+    if(!decoderRunning){ controls?.stop(); return; }
+    drawFrame();
+    if(result){
+      const text = result.getText ? result.getText() : (result.text || "");
+      const points = result.getResultPoints ? result.getResultPoints() : (result.resultPoints || []);
+      handleDetection(text, points);
+    }
+  });
 }
-startBtn.onclick=startCam;stopBtn.onclick=stopCam;
+function stopDecodingLoop(){
+  decoderRunning=false;
+  try{ codeReader.reset(); }catch(e){}
+}
+
+/* ==== Overlay ==== */
+function sizingSync(){
+  const w = video.videoWidth || 640;
+  const h = video.videoHeight || 480;
+  overlay.width = w; overlay.height = h;
+}
+function drawFrame(){ ctx.clearRect(0,0,overlay.width,overlay.height); }
+function drawBox(points,color){
+  if(!points||points.length===0)return;
+  const tx=x=>mirrorChk.checked?(overlay.width-x):x;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  points.forEach(p=>{
+    const x=p.getX?p.getX():p.x;const y=p.getY?p.getY():p.y;
+    minX=Math.min(minX,x);maxX=Math.max(maxX,x);
+    minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+  });
+  const pad=20,x1=Math.max(0,minX-pad),y1=Math.max(0,minY-pad),
+        x2=Math.min(overlay.width,maxX+pad),y2=Math.min(overlay.height,maxY+pad),
+        w=x2-x1,h=y2-y1,mx1=mirrorChk.checked?overlay.width-x2:x1;
+  ctx.lineWidth=4;ctx.strokeStyle=color;ctx.strokeRect(mx1,y1,w,h);
+}
+function drawLabel(points,text,color){
+  if(!points||points.length===0)return;
+  let anchor=points[0];
+  for(const p of points){
+    const x=p.getX?p.getX():p.x, y=p.getY?p.getY():p.y;
+    const ax=anchor.getX?anchor.getX():anchor.x, ay=anchor.getY?anchor.getY():anchor.y;
+    if(y<ay||(y===ay&&x<ax))anchor=p;
+  }
+  const ax=anchor.getX?anchor.getX():anchor.x;
+  const ay=anchor.getY?anchor.getY():anchor.y;
+  const x=mirrorChk.checked?(overlay.width-ax):ax;
+  const y=Math.max(24,ay-10);
+  ctx.font="16px system-ui";const w=ctx.measureText(text).width;
+  ctx.fillStyle="rgba(0,0,0,0.6)";ctx.fillRect(x-4,y-18,w+10,20);
+  ctx.fillStyle=color;ctx.fillText(text,x,y-4);
+}
+
+/* ==== Detection ==== */
+async function handleDetection(text,points){
+  const mode=getMode();
+  const isDupe=scannedByMode[mode].has(text);
+  const color=getComputedStyle(document.documentElement).getPropertyValue(isDupe?'--red':'--blue').trim();
+  drawBox(points,color);
+  drawLabel(points,isDupe?`Duplicate in ${mode.toUpperCase()}`:text,color);
+  const key=mode+"||"+text;const now=Date.now();
+  if(key===lastFrameKey&&(now-lastFrameTime)<1200)return;
+  lastFrameKey=key;lastFrameTime=now;
+  if(isDupe&&preventDupesChk.checked){
+    statusLabel.textContent=`⚠️ Duplicate ignored (${mode.toUpperCase()})`;
+    return;
+  }
+  flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
+  statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
+  const snap=await captureSnapshot();
+  const caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}\n🔗 [View Sheet](https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=0)`;
+  try{
+    const sheetRes=await sendToSheet(text,snap,mode);
+    const tgRes=await sendToTelegram(snap,caption);
+    statusLabel.textContent=(sheetRes.ok?"✅ Sheet ":"❌ Sheet ")+(tgRes.ok?"| ✅ Telegram":"| ❌ Telegram");
+    if(sheetRes.ok)scannedByMode[mode].add(text);
+  }catch(e){statusLabel.textContent="❌ "+(e.message||e);}
+}
+
+/* ==== Capture ==== */
+async function captureSnapshot(){
+  const w=video.videoWidth,h=video.videoHeight;
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  const cx=c.getContext('2d');
+  if(mirrorChk.checked){cx.translate(w,0);cx.scale(-1,1);}
+  cx.drawImage(video,0,0,w,h);
+  return new Promise(r=>c.toBlob(b=>r(b),"image/png",0.95));
+}
+function blobToDataURL(b){return new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b);});}
+
+/* ==== Send to Sheet ==== */
+async function sendToSheet(id,blob,mode){
+  const image=blob?await blobToDataURL(blob):"";
+  const body={mode,id,qr:id,url:location.href,image};
+  const res=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(body)});
+  const text=await res.text();try{return JSON.parse(text);}catch{return{ok:false,error:text};}
+}
+
+/* ==== Telegram ==== */
+async function sendToTelegram(blob,caption){
+  try{
+    tgStatus.textContent="Telegram: sending...";
+    const fd=new FormData();
+    fd.append("chat_id",CHAT_ID);fd.append("caption",caption);
+    fd.append("parse_mode","Markdown");fd.append("photo",blob,"scan.png");
+    const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,{method:"POST",body:fd});
+    const j=await r.json();tgStatus.textContent=j.ok?"Telegram: sent ✅":"Telegram: error ❌";return j;
+  }catch(e){tgStatus.textContent="Telegram: error ❌";return{ok:false,error:e.message};}
+}
+
+/* ==== Test Buttons ==== */
+pingBtn.onclick=async()=>{statusLabel.textContent="🔄 Testing connection...";try{
+  const r=await fetch(GAS_URL+"?action=ping");const t=await r.text();
+  statusLabel.textContent=t.includes('"ok":true')?"🟢 Sheet OK":"🔴 Fail: "+t;
+}catch(e){statusLabel.textContent="🔴 "+e.message;}};
+
+testBtn.onclick=async()=>{
+  const mode=getMode();
+  const c=document.createElement('canvas');c.width=640;c.height=360;
+  const cx=c.getContext('2d');
+  cx.fillStyle="#111";cx.fillRect(0,0,c.width,c.height);
+  cx.fillStyle="#fff";cx.font="28px system-ui";
+  cx.fillText(`TEST ${mode.toUpperCase()}`,20,50);
+  cx.fillText(new Date().toLocaleString(),20,90);
+  const blob=await new Promise(r=>c.toBlob(b=>r(b),"image/png",0.95));
+  const caption=`🧪 ${mode.toUpperCase()} Test\n• Time: ${new Date().toLocaleTimeString()}\n🔗 [View Sheet](https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=0)`;
+  statusLabel.textContent=`🧪 Test (${mode.toUpperCase()})...`;
+  const s=await sendToSheet("TEST001",blob,mode);
+  const t=await sendToTelegram(blob,caption);
+  statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
+};
+
+/* ==== Bindings ==== */
+startBtn.onclick=start;
+stopBtn.onclick=stop;
+torchBtn.onclick=toggleTorch;
+video.addEventListener('loadedmetadata',sizingSync);
 </script>
 </body>
 </html>
