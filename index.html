@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>QR Scanner → Google Sheet (Auto Mode)</title>
+<style>
+body{margin:0;background:#0f172a;color:#e2e8f0;font-family:system-ui}
+header{padding:12px 16px;border-bottom:1px solid #1f2937}
+main{padding:16px;max-width:900px;margin:auto}
+button{background:#111827;color:#e2e8f0;border:1px solid #374151;border-radius:8px;
+padding:10px 16px;font-size:16px;margin-right:6px;cursor:pointer}
+#frameWrap{position:relative;border:1px solid #334155;border-radius:12px;overflow:hidden;background:#000;margin:10px 0}
+#video{position:absolute;width:100%;height:auto;opacity:0;pointer-events:none}
+#overlay{display:block;width:100%;height:auto}
+#flash{position:absolute;inset:0;background:white;opacity:0;transition:opacity .2s ease;border-radius:12px}
+#status{text-align:center;margin-top:6px;font-size:15px;color:#22d3ee}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+</head>
+<body>
+<header><strong>QR Scanner → Sheet (Auto)</strong></header>
+<main>
+<button id="startBtn">Start Camera</button>
+<button id="stopBtn" disabled>Stop</button>
+<div id="frameWrap">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="flash"></div>
+</div>
+<div id="status">Waiting for camera…</div>
+</main>
+<script>
+const GAS_URL="https://script.google.com/macros/s/REPLACE_WITH_YOUR_EXEC_URL/exec";
+const video=document.getElementById('video'),overlay=document.getElementById('overlay'),
+ctx=overlay.getContext('2d'),startBtn=document.getElementById('startBtn'),
+stopBtn=document.getElementById('stopBtn'),flash=document.getElementById('flash'),
+status=document.getElementById('status');let stream=null,scan=true,crop={};
+const snap=document.createElement('canvas'),snapCtx=snap.getContext('2d');
+
+async function startCam(){
+ stopCam();
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+  video.srcObject=stream;await video.play();scan=true;startBtn.disabled=true;stopBtn.disabled=false;
+  layout();loop();
+ }catch(e){status.textContent="Camera error "+e.message;}
+}
+function stopCam(){scan=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+ startBtn.disabled=false;stopBtn.disabled=true;}
+function layout(){
+ const vw=video.videoWidth,vh=video.videoHeight;if(!vw||!vh)return;
+ const segH=vh/3,ar=segH/vw,cw=overlay.clientWidth||640,ch=Math.round(cw*ar);
+ overlay.width=cw;overlay.height=ch;snap.width=cw;snap.height=ch;
+ crop={sx:0,sy:Math.floor(vh/3),sw:vw,sh:Math.floor(vh/3)};
+}
+function flashFx(){flash.style.opacity=1;setTimeout(()=>flash.style.opacity=0,150);}
+function loop(){
+ if(!scan)return;requestAnimationFrame(loop);
+ if(video.readyState!==video.HAVE_ENOUGH_DATA)return;
+ layout();const {sx,sy,sw,sh}=crop;
+ ctx.drawImage(video,sx,sy,sw,sh,0,0,overlay.width,overlay.height);
+ const img=ctx.getImageData(0,0,overlay.width,overlay.height);
+ const qr=jsQR(img.data,img.width,img.height,{inversionAttempts:"dontInvert"});
+ if(qr){ctx.beginPath();ctx.moveTo(qr.location.topLeftCorner.x,qr.location.topLeftCorner.y);
+ ctx.lineTo(qr.location.topRightCorner.x,qr.location.topRightCorner.y);
+ ctx.lineTo(qr.location.bottomRightCorner.x,qr.location.bottomRightCorner.y);
+ ctx.lineTo(qr.location.bottomLeftCorner.x,qr.location.bottomLeftCorner.y);
+ ctx.closePath();ctx.lineWidth=4;ctx.strokeStyle="#22d3ee";ctx.stroke();
+ handleResult(qr.data);}
+}
+async function handleResult(text){
+ scan=false;flashFx();status.textContent="⏳ Sending to server (Auto)…";
+ const blob=await capturePNG(text);
+ const [id,name='',info='']=text.split('|'); // adjust parsing as needed
+ const resp=await sendAuto({id:id||text,name,info,qr:text,blob});
+ status.textContent=resp.ok?`✅ AUTO → ${resp.action.toUpperCase()}`:`❌ ${resp.error||'Error'}`;
+ setTimeout(()=>scan=true,1500);
+}
+function capturePNG(text){return new Promise(r=>{
+ const {sx,sy,sw,sh}=crop;snapCtx.drawImage(video,sx,sy,sw,sh,0,0,snap.width,snap.height);
+ snapCtx.font="16px system-ui";snapCtx.fillStyle="rgba(0,0,0,.5)";
+ snapCtx.fillRect(0,0,snap.width,26);snapCtx.fillStyle="#22d3ee";
+ snapCtx.fillText(text,10,18);snap.toBlob(b=>r(b),"image/png",0.95);
+});}
+function blobToDataURL(blob){return new Promise(res=>{
+ const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob);});}
+async function sendAuto({id,name,info,qr,blob}){
+ const img=blob?await blobToDataURL(blob):"";const body={mode:"auto",id,name,info,qr,url:location.href,image:img};
+ const res=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ return res.json();
+}
+startBtn.onclick=startCam;stopBtn.onclick=stopCam;
+</script>
+</body>
+</html>
