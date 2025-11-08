@@ -14,7 +14,7 @@ header{
   text-align:center;font-size:20px;font-weight:600;color:var(--accent);
 }
 main{padding:12px 16px;max-width:900px;margin:auto}
-button{background:#111827;color:var(--fg);border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
+button{background:#111827;color:#e2e8f0;border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
 button:hover{border-color:var(--accent)}
 label{margin-right:10px}
 fieldset{border:1px solid #334155;padding:8px 12px;border-radius:8px;margin-top:8px}
@@ -25,6 +25,7 @@ legend{font-size:14px;color:var(--accent)}
 #overlay{position:absolute;left:0;top:0;width:100%;height:auto;pointer-events:none}
 #statusLabel{text-align:center;margin-top:8px;font-size:15px;color:var(--accent)}
 .badge{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:999px;font-size:12px}
+#cameraLabel{margin-left:10px;font-size:14px;color:#9ca3af;}
 </style>
 
 <script type="module">
@@ -38,8 +39,9 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
 <div>
   <button id="startBtn">Start / Switch Camera</button>
   <button id="stopBtn" disabled>Stop</button>
-  <button id="torchBtn" disabled>Torch</button>
+  <button id="torchBtn" disabled>Toggle Torch</button>
   <button id="testBtn">Test System</button>
+  <span id="cameraLabel">No camera</span><br/>
   <label><input type="checkbox" id="beepChk" checked> Beep</label>
   <label><input type="checkbox" id="vibrateChk" checked> Vibrate</label>
   <label><input type="checkbox" id="mirrorChk"> Mirror camera view</label>
@@ -78,10 +80,10 @@ const torchBtn=document.getElementById("torchBtn"), testBtn=document.getElementB
 const beepChk=document.getElementById("beepChk"), vibrateChk=document.getElementById("vibrateChk");
 const mirrorChk=document.getElementById("mirrorChk"), preventDupesChk=document.getElementById("preventDupesChk");
 const statusLabel=document.getElementById("statusLabel"), tgStatus=document.getElementById("tgStatus");
-const modeBadge=document.getElementById("modeBadge");
+const modeBadge=document.getElementById("modeBadge"), cameraLabel=document.getElementById("cameraLabel");
 
 /* ==== STATE ==== */
-let stream=null, track=null, audioCtx;
+let stream=null, track=null, torchOn=false, audioCtx;
 let decoderRunning=false, renderRunning=false;
 let devices=[], camIndex=0;
 let vw=0,vh=0,cropY=0,cropH=0;
@@ -98,56 +100,61 @@ function beep(){if(!beepChk.checked)return;audioCtx??=new (window.AudioContext||
 function flash(){document.body.style.background="#334";setTimeout(()=>document.body.style.background="#0f172a",150);}
 function keyFor(m,t){return`${m}||${t}`;}function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
 
-/* ==== Camera (Unified Start / Switch) ==== */
+/* ==== Camera (Auto default back + Unified Start/Switch) ==== */
 async function initCameras(){
-  try{
-    const all=await navigator.mediaDevices.enumerateDevices();
-    devices=all.filter(d=>d.kind==="videoinput");
-    if(!devices.length)throw new Error("No cameras detected");
-  }catch(e){statusLabel.textContent="❌ "+e.message;}
+  const all=await navigator.mediaDevices.enumerateDevices();
+  devices=all.filter(d=>d.kind==="videoinput");
+  // Prefer rear camera (environment)
+  const backIndex=devices.findIndex(d=>/back|rear|environment/i.test(d.label));
+  if(backIndex>0){const tmp=devices[0];devices[0]=devices[backIndex];devices[backIndex]=tmp;}
 }
-
 async function startOrSwitchCamera(){
   stop();
   try{
     if(!devices.length)await initCameras();
-    const deviceId=devices[camIndex%devices.length].deviceId;
-    const label=devices[camIndex%devices.length].label||`Camera ${camIndex+1}`;
+    const device=devices[camIndex%devices.length];
     camIndex=(camIndex+1)%devices.length;
+    const deviceId=device.deviceId,label=device.label||`Camera ${camIndex}`;
+    cameraLabel.textContent=`🎥 ${label}`;
     stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:deviceId}}});
     video.srcObject=stream;await video.play();
     track=stream.getVideoTracks()[0];
-    torchBtn.disabled=!track.getCapabilities?.().torch;
+    const caps=track.getCapabilities?.()||{};
+    torchBtn.disabled=!caps.torch;
     stopBtn.disabled=false;
-    startBtn.textContent=devices.length>1?"Switch Camera":"Start Camera";
-    updateSizes();
-    startDecode();
-    startRender();
-    statusLabel.textContent=`📷 Active: ${label}`;
+    updateSizes();startDecode();startRender();
+    statusLabel.textContent=`📷 Active: ${label}${caps.torch?" (Torch Available)":""}`;
   }catch(e){statusLabel.textContent="⚠️ "+e.message;}
 }
-
 function stop(){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-  stopDecode();stopRender();
-  vctx.clearRect(0,0,view.width,view.height);
-  ctx.clearRect(0,0,overlay.width,overlay.height);
-  stopBtn.disabled=true;
-  startBtn.textContent="Start / Switch Camera";
+  stopDecode();stopRender();vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);
+  torchOn=false;torchBtn.textContent="Toggle Torch";stopBtn.disabled=true;
+  cameraLabel.textContent="No camera";
 }
 
 /* ==== Torch ==== */
-async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch(e){console.warn(e);}}
+async function toggleTorch(){
+  if(!track){statusLabel.textContent="⚠️ No active camera";return;}
+  const caps=track.getCapabilities?.()||{};
+  if(!caps.torch){statusLabel.textContent="🚫 Torch not supported on this camera";return;}
+  try{
+    torchOn=!torchOn;
+    await track.applyConstraints({advanced:[{torch:torchOn}]});
+    torchBtn.textContent=torchOn?"Torch: ON":"Torch: OFF";
+    statusLabel.textContent=torchOn?"💡 Torch Enabled":"💡 Torch Disabled";
+  }catch(e){statusLabel.textContent="⚠️ Torch failed: "+e.message;}
+}
 
-/* ==== Sizing & Render ==== */
+/* ==== Sizing ==== */
 function updateSizes(){vw=video.videoWidth||640;vh=video.videoHeight||480;cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
 view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;}
 video.addEventListener('loadedmetadata',updateSizes);
 
+/* ==== Render ==== */
 function startRender(){if(renderRunning)return;renderRunning=true;(function loop(){if(!renderRunning)return;requestAnimationFrame(loop);
 if(!vw||!vh)return;vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);vctx.restore();
-ctx.clearRect(0,0,overlay.width,overlay.height);
-if(lastDet&&(performance.now()-lastDetTime)<200)drawDet(lastDet);})();}
+ctx.clearRect(0,0,overlay.width,overlay.height);if(lastDet&&(performance.now()-lastDetTime)<200)drawDet(lastDet);})();}
 function stopRender(){renderRunning=false;}
 function mapPoint(p){let x=p.getX?p.getX():p.x,y=p.getY?p.getY():p.y;if(mirrorChk.checked)x=vw-x;y-=cropY;return{x,y};}
 function drawDet(det){const pts=det.points.map(mapPoint).filter(p=>p.y>=0&&p.y<=cropH);if(!pts.length)return;
@@ -174,11 +181,9 @@ if(preventDupesChk.checked)processedAt.set(key,now);
 flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
 statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
 const snap=await captureSnap(),caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
-try{
-const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
+try{const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
 statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
-if(s.ok)scannedByMode[mode].add(text);
-}catch(e){statusLabel.textContent="❌ "+e.message;}
+if(s.ok)scannedByMode[mode].add(text);}catch(e){statusLabel.textContent="❌ "+e.message;}
 }
 
 /* ==== Capture ==== */
