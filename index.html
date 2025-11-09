@@ -7,25 +7,61 @@
 <style>
 :root { --bg:#0f172a; --fg:#e2e8f0; --accent:#22d3ee; --blue:#22d3ee; --red:#ef4444; }
 *{box-sizing:border-box}
-body{margin:0;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif}
 header{
-  position:sticky;top:0;z-index:999;
+  position:sticky;top:0;z-index:9999;
   padding:14px 16px;background:#111827;border-bottom:2px solid var(--accent);
   text-align:center;font-size:20px;font-weight:600;color:var(--accent);
 }
-main{padding:12px 16px;max-width:900px;margin:auto}
+main{padding:12px 16px;max-width:900px;margin:auto; /* space for sticky bar */ padding-bottom:92px}
+
+/* Buttons + checkboxes layout */
 button{background:#111827;color:var(--fg);border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
 button:hover{border-color:var(--accent)}
-label{margin-right:10px}
-fieldset{border:1px solid #334155;padding:8px 12px;border-radius:8px;margin-top:8px}
-legend{font-size:14px;color:var(--accent)}
+.controls{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.controls .buttons{display:flex;flex-wrap:wrap;gap:6px}
+.controls .checkboxes{display:flex;flex-direction:column;gap:6px;padding-left:4px}
+
+/* Glowing checkboxes */
+label.tick{display:flex;align-items:center;gap:8px;font-size:15px;cursor:pointer;user-select:none;transition:color .3s}
+label.tick input{display:none}
+label.tick .indicator{width:14px;height:14px;border-radius:3px;border:1px solid #444;background:#2d3748;box-shadow:inset 0 0 3px rgba(0,0,0,0.6);transition:all .3s}
+label.tick input:checked + .indicator{background:#10b981;border-color:#10b981;box-shadow:0 0 5px #10b981,0 0 10px #10b98180}
+label.tick:hover .indicator{box-shadow:0 0 4px #22d3ee}
+
+/* Frame + canvas */
 #frameWrap{position:relative;border:1px solid #334155;border-radius:12px;overflow:hidden;background:#000;margin:10px 0}
 #video{display:none}
 #view{display:block;width:100%;height:auto}
 #overlay{position:absolute;left:0;top:0;width:100%;height:auto;pointer-events:none}
-#statusLabel{text-align:center;margin-top:8px;font-size:15px;color:var(--accent)}
-#summaryLine{text-align:center;margin-top:10px;font-size:16px;color:#9fe8a3;font-weight:500;}
 .badge{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:999px;font-size:12px}
+
+/* Sticky status bar at bottom */
+.statusbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:9998;
+  display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;
+  padding:10px 12px;
+  border-top:1px solid #243040;
+  background:rgba(11,18,32,0.9); /* translucent dark */
+  backdrop-filter: blur(6px);
+}
+.pill{
+  display:inline-block;padding:6px 10px;border-radius:999px;font-size:14px;font-weight:600;
+  transition:color .25s,background .25s,box-shadow .25s;
+  border:1px solid #334155;background:#0b1220;color:#cbd5e1
+}
+.pill.idle{color:#a1a1aa;border-color:#374151}
+.pill.sending{color:#facc15;border-color:#a16207;box-shadow:0 0 6px #facc1570;position:relative;padding-left:28px}
+.pill.sending::before{content:"";position:absolute;left:8px;top:50%;transform:translateY(-50%);width:14px;height:14px;border-radius:50%;border:2px solid rgba(250,204,21,.35);border-top-color:#facc15;animation:pill-spin .9s linear infinite}
+@keyframes pill-spin{to{transform:translateY(-50%) rotate(360deg)}}
+.pill.success{color:#22c55e;border-color:#15803d;box-shadow:0 0 6px #22c55e90}
+.pill.error{color:#ef4444;border-color:#7f1d1d;box-shadow:0 0 6px #ef444480}
+
+/* Summary line */
+#summaryLine{text-align:center;margin-top:10px;font-size:16px;font-weight:500;color:#9fe8a3}
+
+fieldset{border:1px solid #334155;padding:8px 12px;border-radius:8px;margin-top:8px}
+legend{font-size:14px;color:var(--accent)}
 </style>
 
 <!-- ZXing -->
@@ -37,16 +73,20 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
 <body>
 <header>🎓 Smart Convocation Robe Borrowing System</header>
 <main>
-<div>
-  <button id="startBtn">Start</button>
-  <button id="stopBtn" disabled>Stop</button>
-  <button id="torchBtn" disabled>Torch</button>
-  <button id="testBtn">Test System</button>
-  <label><input type="checkbox" id="beepChk" checked> Beep</label>
-  <label><input type="checkbox" id="vibrateChk" checked> Vibrate</label>
-  <label><input type="checkbox" id="mirrorChk"> Mirror camera view</label>
-  <label><input type="checkbox" id="preventDupesChk" checked> Prevent duplicate send</label>
-  <span id="tgStatus" style="margin-left:10px">Telegram: idle</span>
+
+<div class="controls">
+  <div class="buttons">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="torchBtn" disabled>Torch</button>
+    <button id="testBtn">Test System</button>
+  </div>
+  <div class="checkboxes">
+    <label class="tick"><input type="checkbox" id="beepChk" checked><span class="indicator"></span> Beep</label>
+    <label class="tick"><input type="checkbox" id="vibrateChk" checked><span class="indicator"></span> Vibrate</label>
+    <label class="tick"><input type="checkbox" id="mirrorChk"><span class="indicator"></span> Mirror camera view</label>
+    <label class="tick"><input type="checkbox" id="preventDupesChk" checked><span class="indicator"></span> Prevent duplicate send</label>
+  </div>
 </div>
 
 <fieldset>
@@ -61,159 +101,160 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
   <canvas id="view"></canvas>
   <canvas id="overlay"></canvas>
 </div>
-<div id="statusLabel">Ready.</div>
+
 <div id="summaryLine"></div>
 </main>
 
+<!-- Sticky pills -->
+<div class="statusbar" aria-live="polite">
+  <span id="camStatus"   class="pill idle">📷 Camera: idle</span>
+  <span id="sheetStatus" class="pill idle">📄 Sheet: idle</span>
+  <span id="tgStatus"    class="pill idle">✈️ Telegram: idle</span>
+</div>
+
 <script type="module">
 /* ==== CONFIG ==== */
-const GAS_URL  = "https://script.google.com/macros/s/AKfycbyJifwYjoBeZ0SmFc7F7ENJCQfTuquT6QVZHV4aCEfamgFQmtED78IWLeOqSPnXGCo/exec";
-const BOT_TOKEN= "121011557:AAHE32VqMkQ8AnnXuDAlLXZn6Ybg7mXpyMo";
-const CHAT_ID  = "44305665";
-const BLOCK_MS = 5000;
+const GAS_URL="https://script.google.com/macros/s/AKfycbyJifwYjoBeZ0SmFc7F7ENJCQfTuquT6QVZHV4aCEfamgFQmtED78IWLeOqSPnXGCo/exec";
+const BOT_TOKEN="121011557:AAHE32VqMkQ8AnnXuDAlLXZn6Ybg7mXpyMo";
+const CHAT_ID="44305665";
+const BLOCK_MS=5000;
 
 /* ==== DOM ==== */
-const video=document.getElementById("video"), view=document.getElementById("view"), vctx=view.getContext("2d");
-const overlay=document.getElementById("overlay"), ctx=overlay.getContext("2d");
-const startBtn=document.getElementById("startBtn"), stopBtn=document.getElementById("stopBtn");
-const torchBtn=document.getElementById("torchBtn");
-const testBtn=document.getElementById("testBtn");
-const beepChk=document.getElementById("beepChk"), vibrateChk=document.getElementById("vibrateChk");
-const mirrorChk=document.getElementById("mirrorChk"), preventDupesChk=document.getElementById("preventDupesChk");
-const statusLabel=document.getElementById("statusLabel"), tgStatus=document.getElementById("tgStatus");
-const modeBadge=document.getElementById("modeBadge"), summaryLine=document.getElementById("summaryLine");
+const video=document.getElementById("video"),view=document.getElementById("view"),vctx=view.getContext("2d");
+const overlay=document.getElementById("overlay"),ctx=overlay.getContext("2d");
+const startBtn=document.getElementById("startBtn"),stopBtn=document.getElementById("stopBtn"),torchBtn=document.getElementById("torchBtn"),testBtn=document.getElementById("testBtn");
+const beepChk=document.getElementById("beepChk"),vibrateChk=document.getElementById("vibrateChk"),mirrorChk=document.getElementById("mirrorChk"),preventDupesChk=document.getElementById("preventDupesChk");
+const modeBadge=document.getElementById("modeBadge"),summaryLine=document.getElementById("summaryLine");
+const camStatus=document.getElementById("camStatus"),sheetStatus=document.getElementById("sheetStatus"),tgStatus=document.getElementById("tgStatus");
 
 /* ==== STATE ==== */
-let stream=null, track=null, facing="environment";
-let decoderRunning=false, renderRunning=false, audioCtx;
-let vw=0,vh=0,cropY=0,cropH=0;
+let stream=null,track=null,audioCtx,vw=0,vh=0,cropY=0,cropH=0;
 const codeReader=window.ZXING_Reader;
-const scannedByMode={borrow:new Set(),return:new Set()}, processedAt=new Map();
-let lastFrameKey="",lastFrameTime=0,lastDet=null,lastDetTime=0;
+const processedAt=new Map();
 
-/* ==== Mode ==== */
-function getMode(){return document.querySelector('input[name="mode"]:checked').value;}
-document.querySelectorAll('input[name="mode"]').forEach(r=>r.addEventListener('change',()=>modeBadge.textContent="Mode: "+getMode().toUpperCase()));
+/* ==== INIT ==== */
+camStatus.className="pill idle";sheetStatus.className="pill idle";tgStatus.className="pill idle";
 
 /* ==== Helpers ==== */
+function setPill(el,state,label){el.className=`pill ${state}`;if(label)el.textContent=label;}
+function getMode(){return document.querySelector('input[name="mode"]:checked').value;}
+document.querySelectorAll('input[name="mode"]').forEach(r=>r.addEventListener('change',()=>modeBadge.textContent="Mode: "+getMode().toUpperCase()));
 function beep(){if(!beepChk.checked)return;audioCtx??=new (window.AudioContext||window.webkitAudioContext)();const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.type="sine";o.frequency.value=880;o.connect(g);g.connect(audioCtx.destination);o.start();setTimeout(()=>o.stop(),100);}
 function flash(){document.body.style.background="#334";setTimeout(()=>document.body.style.background="#0f172a",150);}
 function keyFor(m,t){return`${m}||${t}`;}function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
 
 /* ==== Camera ==== */
 async function start(){
- stop();
- try{
-   stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}});
-   video.srcObject=stream;await video.play();track=stream.getVideoTracks()[0];
-   torchBtn.disabled=!track.getCapabilities?.().torch;
-   startBtn.disabled=true;stopBtn.disabled=false;updateSizes();startDecode();startRender();
-   statusLabel.textContent="Camera started.";
- }catch(e){statusLabel.textContent=e.message;}
+  stop();
+  try{
+    setPill(camStatus,"sending","📷 Camera: starting…");
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+    video.srcObject=stream;await video.play();track=stream.getVideoTracks()[0];
+    torchBtn.disabled=!track.getCapabilities?.().torch;
+    startBtn.disabled=true;stopBtn.disabled=false;
+    vw=video.videoWidth||640;vh=video.videoHeight||480;cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
+    view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;
+    startDecode();startRender();
+    setPill(camStatus,"success","📷 Camera: on");
+  }catch(e){setPill(camStatus,"error","📷 Camera: error");}
 }
-function stop(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
- startBtn.disabled=false;stopBtn.disabled=true;torchBtn.disabled=true;
- stopDecode();stopRender();vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);}
-async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch(e){console.warn(e);}}
-
-/* ==== Sizing ==== */
-function updateSizes(){vw=video.videoWidth||640;vh=video.videoHeight||480;cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
- view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;view.style.width="100%";overlay.style.width="100%";}
-video.addEventListener('loadedmetadata',updateSizes);
+function stop(){
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  startBtn.disabled=false;stopBtn.disabled=true;torchBtn.disabled=true;
+  setPill(camStatus,"idle","📷 Camera: idle");
+  stopDecode();stopRender();vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);
+}
+async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch{}}
 
 /* ==== Render ==== */
+let renderRunning=false;
 function startRender(){if(renderRunning)return;renderRunning=true;(function loop(){if(!renderRunning)return;requestAnimationFrame(loop);
- if(!vw||!vh)return;vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);vctx.restore();
- ctx.clearRect(0,0,overlay.width,overlay.height);
- if(lastDet&&(performance.now()-lastDetTime)<200)drawDet(lastDet);})();}function stopRender(){renderRunning=false;}
-function mapPoint(p){let x=p.getX?p.getX():p.x,y=p.getY?p.getY():p.y;if(mirrorChk.checked)x=vw-x;y-=cropY;return{x,y};}
-function drawDet(det){const pts=det.points.map(mapPoint).filter(p=>p.y>=0&&p.y<=cropH);if(!pts.length)return;
- let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
- const pad=20,x=Math.max(0,minX-pad),y=Math.max(0,minY-pad),w=Math.min(overlay.width,maxX+pad)-x,h=Math.min(overlay.height,maxY+pad)-y;
- ctx.lineWidth=4;ctx.strokeStyle=det.color;ctx.strokeRect(x,y,w,h);ctx.font="16px system-ui";const tw=ctx.measureText(det.label).width;ctx.fillStyle="rgba(0,0,0,0.6)";
- ctx.fillRect(x-4,Math.max(0,y-24),tw+10,20);ctx.fillStyle=det.color;ctx.fillText(det.label,x,y-8);}
+  if(!vw||!vh)return;
+  vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}
+  vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);
+  vctx.restore();
+})(); }
+function stopRender(){renderRunning=false;}
 
 /* ==== Decode ==== */
-function startDecode(){if(decoderRunning)return;decoderRunning=true;codeReader.decodeFromVideoDevice(null,video,(res,err,ctrl)=>{
- if(!decoderRunning){ctrl?.stop();return;}if(res){handleDet(res.getText?res.getText():res.text,res.getResultPoints?res.getResultPoints():res.resultPoints||[]);}});}
+let decoderRunning=false;
+function startDecode(){
+  if(decoderRunning)return;decoderRunning=true;
+  codeReader.decodeFromVideoDevice(null,video,(res)=>{if(!decoderRunning)return;if(res)handleDet(res.text,res.resultPoints||[]);});
+}
 function stopDecode(){decoderRunning=false;try{codeReader.reset();}catch{}}
 
 /* ==== Detection ==== */
 async function handleDet(text,points){
- const mode=getMode(),recent=isBlocked(mode,text),dupe=scannedByMode[mode].has(text);
- const color=getComputedStyle(document.documentElement).getPropertyValue((recent||dupe)?'--red':'--blue').trim();
- const label=recent?`Blocked ${mode}`:(dupe?`Duplicate ${mode}`:text);
- lastDet={points,color,label};lastDetTime=performance.now();
- const key=keyFor(mode,text),now=Date.now();if(key===lastFrameKey&&(now-lastFrameTime)<1200)return;lastFrameKey=key;lastFrameTime=now;
- if(recent){statusLabel.textContent=`⛔ Blocked (${mode})`;return;}
- if(preventDupesChk.checked)processedAt.set(key,now);
- flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
- statusLabel.textContent=`⏳ Sending (${mode.toUpperCase()})...`;
- const snap=await captureSnap(),caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
- try{
-   const s=await sendSheet(text,snap,mode),t=await sendTg(snap,caption);
-   statusLabel.textContent=(s.ok?"✅ Sheet ":"❌ Sheet ")+(t.ok?"| ✅ Telegram":"| ❌ Telegram");
-   if(s.ok){scannedByMode[mode].add(text);await updateSummaryFromSheet(text,mode);}
- }catch(e){statusLabel.textContent="❌ "+e.message;}
+  const mode=getMode();
+  if(isBlocked(mode,text)) return;
+  if(preventDupesChk.checked) processedAt.set(keyFor(mode,text),Date.now());
+  flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
+
+  const snap=await captureSnap();
+  const caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
+
+  const s=await sendSheet(text,snap,mode);
+  const t=await sendTg(snap,caption);
+  if(s.ok) await updateSummaryFromSheet(text,mode);
 }
 
 /* ==== Capture ==== */
-async function captureSnap(){const c=document.createElement('canvas');c.width=view.width;c.height=view.height;const cx=c.getContext('2d');
- if(mirrorChk.checked){cx.translate(c.width,0);cx.scale(-1,1);}cx.drawImage(video,0,cropY,vw,cropH,0,0,c.width,c.height);
- return new Promise(r=>c.toBlob(b=>r(b),'image/png',0.95));}
+async function captureSnap(){
+  const c=document.createElement("canvas");c.width=view.width;c.height=view.height;const cx=c.getContext("2d");
+  if(mirrorChk.checked){cx.translate(c.width,0);cx.scale(-1,1);}
+  cx.drawImage(video,0,cropY,vw,cropH,0,0,c.width,c.height);
+  return new Promise(r=>c.toBlob(b=>r(b),"image/png",0.95));
+}
 function blobToDataURL(b){return new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b);});}
 
 /* ==== Network ==== */
 async function sendSheet(id,blob,mode){
-  const img=blob?await blobToDataURL(blob):"";
-  const body={mode,id,qr:id,url:location.href,image:img};
-  const r=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(body)});
-  const t=await r.text();try{return JSON.parse(t);}catch{return{ok:false,error:t}};
+  try{
+    setPill(sheetStatus,"sending","📄 Sheet: sending…");
+    const img=blob?await blobToDataURL(blob):"";
+    const body={mode,id,qr:id,url:location.href,image:img};
+    const r=await fetch(GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(body)});
+    const t=await r.text();let j;try{j=JSON.parse(t);}catch{j={ok:false,error:t};}
+    setPill(sheetStatus,j.ok?"success":"error",j.ok?"📄 Sheet: updated":"📄 Sheet: error");
+    return j;
+  }catch(e){setPill(sheetStatus,"error","📄 Sheet: network error");return{ok:false,error:e.message};}
 }
 async function sendTg(blob,caption){
   try{
-    tgStatus.textContent="Telegram: sending...";
+    setPill(tgStatus,"sending","✈️ Telegram: sending…");
     const fd=new FormData();fd.append("chat_id",CHAT_ID);fd.append("caption",caption);fd.append("photo",blob,"frame.png");
     const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,{method:"POST",body:fd});
-    const j=await r.json();tgStatus.textContent=j.ok?"Telegram: ✅":"Telegram: ❌";return j;
-  }catch(e){tgStatus.textContent="Telegram: ❌";return{ok:false,error:e.message};}
+    const j=await r.json();setPill(tgStatus,j.ok?"success":"error",j.ok?"✈️ Telegram: sent":"✈️ Telegram: error");return j;
+  }catch(e){setPill(tgStatus,"error","✈️ Telegram: network error");return{ok:false,error:e.message};}
 }
 
-/* ==== Test System (NO APPEND TO SHEET) ==== */
+/* ==== Test System (no append to sheet) ==== */
 testBtn.onclick=async()=>{
-  statusLabel.textContent="🔄 Testing system...";
-  try{
-    const blob=await captureSnap();
-    let sheetOk=false;
-    try{
-      const r=await fetch(GAS_URL+"?action=ping",{method:"GET"});
-      const txt=await r.text();try{const j=JSON.parse(txt);sheetOk=!!j.ok;}catch{sheetOk=/"ok"\s*:\s*true/.test(txt);}
-    }catch{sheetOk=false;}
-    const cap=`🧪 System Test\n• Time: ${new Date().toLocaleString()}\n• Note: Sheet ping only (no append)`;
-    const tg=await sendTg(blob,cap);
-    statusLabel.textContent=(sheetOk?"🟢 Sheet OK ":"🔴 Sheet Fail ")+(tg.ok?"| 🟢 Telegram OK":"| 🔴 Telegram Fail");
-  }catch(e){statusLabel.textContent="❌ "+e.message;}
+  setPill(sheetStatus,"sending","📄 Sheet: ping…");setPill(tgStatus,"idle","✈️ Telegram: idle");
+  const blob=await captureSnap();
+  let sheetOk=false;
+  try{const r=await fetch(GAS_URL+"?action=ping");const j=await r.json();sheetOk=!!j.ok;}catch{}
+  setPill(sheetStatus,sheetOk?"success":"error",sheetOk?"📄 Sheet: OK":"📄 Sheet: fail");
+  setPill(tgStatus,"sending","✈️ Telegram: sending…");
+  const cap=`🧪 System Test\n• Time: ${new Date().toLocaleString()}\n• Note: Sheet ping only (no append)`;
+  await sendTg(blob,cap);
 };
 
-/* ==== Fetch Name & Update Summary ==== */
-async function updateSummaryFromSheet(id, mode){
+/* ==== Fetch Name & Summary ==== */
+async function updateSummaryFromSheet(id,mode){
   try{
     const r=await fetch(`${GAS_URL}?action=getlatest&id=${encodeURIComponent(id)}`);
-    const j=await r.json();
-    if(j.ok && j.row){
-      const personName=j.row.name||"Unknown";
-      const now=new Date().toLocaleString();
-      const action=mode.toUpperCase();
-      summaryLine.innerHTML=`${personName} (${id}) <b>${action}ED</b> a robe at ${now}`;
-    } else {
-      summaryLine.textContent=`(${id}) ${mode.toUpperCase()} completed.`;
-    }
-  }catch{
-    summaryLine.textContent=`(${id}) ${mode.toUpperCase()} completed.`;
-  }
+    const j=await r.json();const now=new Date().toLocaleString();const action=mode.toUpperCase();
+    if(j.ok&&j.row){
+      const personName=j.row.name&&j.row.name.trim()?j.row.name.trim():null;
+      if(personName){summaryLine.style.color="#9fe8a3";summaryLine.innerHTML=`${personName} (${id}) <b>${action}ED</b> a robe at ${now}`;}
+      else{summaryLine.style.color="#f87171";summaryLine.innerHTML=`⚠️ Unknown name for ID (${id}) <b>${action}ED</b> a robe at ${now}`;}
+    }else{summaryLine.style.color="#f87171";summaryLine.textContent=`⚠️ No record found for ID (${id}).`;}
+  }catch{summaryLine.style.color="#f87171";summaryLine.textContent=`⚠️ Error retrieving name for ID (${id}).`;}
 }
 
-/* ==== Bindings ==== */
+/* ==== Bind ==== */
 startBtn.onclick=start;stopBtn.onclick=stop;torchBtn.onclick=toggleTorch;
 </script>
 </body>
