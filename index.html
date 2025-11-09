@@ -13,7 +13,7 @@ header{
   padding:14px 16px;background:#111827;border-bottom:2px solid var(--accent);
   text-align:center;font-size:20px;font-weight:600;color:var(--accent);
 }
-main{padding:12px 16px;max-width:900px;margin:auto; /* space for sticky bar */ padding-bottom:92px}
+main{padding:12px 16px;max-width:900px;margin:auto;padding-bottom:92px}
 
 /* Buttons + checkboxes layout */
 button{background:#111827;color:var(--fg);border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
@@ -29,7 +29,7 @@ label.tick .indicator{width:14px;height:14px;border-radius:3px;border:1px solid 
 label.tick input:checked + .indicator{background:#10b981;border-color:#10b981;box-shadow:0 0 5px #10b981,0 0 10px #10b98180}
 label.tick:hover .indicator{box-shadow:0 0 4px #22d3ee}
 
-/* Frame + canvas */
+/* Frame + canvases */
 #frameWrap{position:relative;border:1px solid #334155;border-radius:12px;overflow:hidden;background:#000;margin:10px 0}
 #video{display:none}
 #view{display:block;width:100%;height:auto}
@@ -40,16 +40,10 @@ label.tick:hover .indicator{box-shadow:0 0 4px #22d3ee}
 .statusbar{
   position:fixed;left:0;right:0;bottom:0;z-index:9998;
   display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;
-  padding:10px 12px;
-  border-top:1px solid #243040;
-  background:rgba(11,18,32,0.9); /* translucent dark */
-  backdrop-filter: blur(6px);
+  padding:10px 12px;border-top:1px solid #243040;
+  background:rgba(11,18,32,0.9);backdrop-filter: blur(6px);
 }
-.pill{
-  display:inline-block;padding:6px 10px;border-radius:999px;font-size:14px;font-weight:600;
-  transition:color .25s,background .25s,box-shadow .25s;
-  border:1px solid #334155;background:#0b1220;color:#cbd5e1
-}
+.pill{display:inline-block;padding:6px 10px;border-radius:999px;font-size:14px;font-weight:600;transition:color .25s,background .25s,box-shadow .25s;border:1px solid #334155;background:#0b1220;color:#cbd5e1}
 .pill.idle{color:#a1a1aa;border-color:#374151}
 .pill.sending{color:#facc15;border-color:#a16207;box-shadow:0 0 6px #facc1570;position:relative;padding-left:28px}
 .pill.sending::before{content:"";position:absolute;left:8px;top:50%;transform:translateY(-50%);width:14px;height:14px;border-radius:50%;border:2px solid rgba(250,204,21,.35);border-top-color:#facc15;animation:pill-spin .9s linear infinite}
@@ -132,6 +126,11 @@ let stream=null,track=null,audioCtx,vw=0,vh=0,cropY=0,cropH=0;
 const codeReader=window.ZXING_Reader;
 const processedAt=new Map();
 
+/* Overlay state */
+let lastDet=null;          // { points:[{x,y},...], color, label }
+let lastDetTime=0;         // performance.now()
+let invalidFlashUntil=0;   // timestamp until when to show red flash
+
 /* ==== INIT ==== */
 camStatus.className="pill idle";sheetStatus.className="pill idle";tgStatus.className="pill idle";
 
@@ -141,7 +140,46 @@ function getMode(){return document.querySelector('input[name="mode"]:checked').v
 document.querySelectorAll('input[name="mode"]').forEach(r=>r.addEventListener('change',()=>modeBadge.textContent="Mode: "+getMode().toUpperCase()));
 function beep(){if(!beepChk.checked)return;audioCtx??=new (window.AudioContext||window.webkitAudioContext)();const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.type="sine";o.frequency.value=880;o.connect(g);g.connect(audioCtx.destination);o.start();setTimeout(()=>o.stop(),100);}
 function flash(){document.body.style.background="#334";setTimeout(()=>document.body.style.background="#0f172a",150);}
-function keyFor(m,t){return`${m}||${t}`;}function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
+function keyFor(m,t){return`${m}||${t}`;}
+function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
+
+/* Map ZXing point to overlay coords (account for crop & mirror) */
+function mapPoint(p){
+  // raw camera coords
+  let x = p.getX ? p.getX() : (p.x ?? 0);
+  let y = p.getY ? p.getY() : (p.y ?? 0);
+  // mirror horizontally on the full sensor width
+  if (mirrorChk.checked) x = vw - x;
+  // shift Y into middle-crop space
+  y -= cropY;
+  return { x, y };
+}
+
+/* Draw detection box + label */
+function drawDet(det){
+  if(!det || !det.points?.length) return;
+  // compute padded rectangle from points
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const p of det.points){
+    minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);
+    minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);
+  }
+  const pad=20;
+  const x=Math.max(0,minX-pad);
+  const y=Math.max(0,minY-pad);
+  const w=Math.min(overlay.width, maxX+pad) - x;
+  const h=Math.min(overlay.height, maxY+pad) - y;
+
+  ctx.lineWidth=4; ctx.strokeStyle=det.color;
+  ctx.strokeRect(x,y,w,h);
+
+  ctx.font="16px system-ui";
+  const tw=ctx.measureText(det.label).width;
+  ctx.fillStyle="rgba(0,0,0,0.6)";
+  ctx.fillRect(x-4,Math.max(0,y-24),tw+10,20);
+  ctx.fillStyle=det.color;
+  ctx.fillText(det.label,x,y-8);
+}
 
 /* ==== Camera ==== */
 async function start(){
@@ -162,41 +200,96 @@ function stop(){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
   startBtn.disabled=false;stopBtn.disabled=true;torchBtn.disabled=true;
   setPill(camStatus,"idle","📷 Camera: idle");
-  stopDecode();stopRender();vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);
+  stopDecode();stopRender();
+  vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);
 }
 async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch{}}
 
-/* ==== Render ==== */
+/* ==== Render loop (video + overlay) ==== */
 let renderRunning=false;
-function startRender(){if(renderRunning)return;renderRunning=true;(function loop(){if(!renderRunning)return;requestAnimationFrame(loop);
-  if(!vw||!vh)return;
-  vctx.save();if(mirrorChk.checked){vctx.translate(view.width,0);vctx.scale(-1,1);}
-  vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);
-  vctx.restore();
-})(); }
-function stopRender(){renderRunning=false;}
+function startRender(){
+  if(renderRunning) return; renderRunning=true;
+  (function loop(){
+    if(!renderRunning) return;
+    requestAnimationFrame(loop);
+    if(!vw||!vh) return;
+
+    // draw cropped camera frame
+    vctx.save();
+    if(mirrorChk.checked){ vctx.translate(view.width,0); vctx.scale(-1,1); }
+    vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);
+    vctx.restore();
+
+    // overlay
+    ctx.clearRect(0,0,overlay.width,overlay.height);
+
+    // brief red flash for invalid reads
+    if (performance.now() < invalidFlashUntil) {
+      ctx.fillStyle = "rgba(239,68,68,0.25)";
+      ctx.fillRect(0,0,overlay.width,overlay.height);
+    }
+
+    // recent detection box
+    if (lastDet && (performance.now() - lastDetTime) < 220) {
+      drawDet(lastDet);
+    }
+  })();
+}
+function stopRender(){ renderRunning=false; }
 
 /* ==== Decode ==== */
 let decoderRunning=false;
 function startDecode(){
-  if(decoderRunning)return;decoderRunning=true;
-  codeReader.decodeFromVideoDevice(null,video,(res)=>{if(!decoderRunning)return;if(res)handleDet(res.text,res.resultPoints||[]);});
+  if(decoderRunning) return; decoderRunning=true;
+  codeReader.decodeFromVideoDevice(null, video, (res)=>{
+    if(!decoderRunning) return;
+    if(res) handleDet(res.text, res.resultPoints || []);
+  });
 }
-function stopDecode(){decoderRunning=false;try{codeReader.reset();}catch{}}
+function stopDecode(){ decoderRunning=false; try{ codeReader.reset(); }catch{} }
 
 /* ==== Detection ==== */
-async function handleDet(text,points){
-  const mode=getMode();
-  if(isBlocked(mode,text)) return;
-  if(preventDupesChk.checked) processedAt.set(keyFor(mode,text),Date.now());
-  flash();beep();if(vibrateChk.checked&&navigator.vibrate)navigator.vibrate(80);
+async function handleDet(text, points){
+  const mode = getMode();
+  const clean = String(text || "").trim();
 
-  const snap=await captureSnap();
-  const caption=`📷 ${mode.toUpperCase()} Scan\n• Data: ${text}\n• Time: ${new Date().toLocaleString()}`;
+  // Map points for overlay
+  const mapped = (points || []).map(mapPoint).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y));
 
-  const s=await sendSheet(text,snap,mode);
-  const t=await sendTg(snap,caption);
-  if(s.ok) await updateSummaryFromSheet(text,mode);
+  // 🚫 Ignore blank or "0" readings; flash red overlay briefly
+  if (!clean || clean === "0") {
+    invalidFlashUntil = performance.now() + 160; // ~0.16s
+    lastDet = { points: mapped, color: "#ef4444", label: "Invalid" };
+    lastDetTime = performance.now();
+    return;
+  }
+
+  // If blocked by per-mode cooldown, show red box + label, but do nothing else
+  if (isBlocked(mode, clean)) {
+    lastDet = { points: mapped, color: "#ef4444", label: "Blocked" };
+    lastDetTime = performance.now();
+    return;
+  }
+
+  // Mark processed now if prevention is enabled
+  if (preventDupesChk.checked) processedAt.set(keyFor(mode, clean), Date.now());
+
+  // Visual/Audio feedback
+  flash();
+  beep();
+  if (vibrateChk.checked && navigator.vibrate) navigator.vibrate(80);
+
+  // Show blue detection box with the content
+  lastDet = { points: mapped, color: getComputedStyle(document.documentElement).getPropertyValue('--blue').trim() || "#22d3ee", label: clean };
+  lastDetTime = performance.now();
+
+  // Snapshot + send
+  const snap = await captureSnap();
+  const caption = `📷 ${mode.toUpperCase()} Scan\n• Data: ${clean}\n• Time: ${new Date().toLocaleString()}`;
+
+  const s = await sendSheet(clean, snap, mode);
+  const t = await sendTg(snap, caption);
+  if (s.ok) await updateSummaryFromSheet(clean, mode);
 }
 
 /* ==== Capture ==== */
