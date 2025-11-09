@@ -15,12 +15,30 @@ header{
 }
 main{padding:12px 16px;max-width:900px;margin:auto;padding-bottom:92px}
 
-/* Buttons + checkboxes layout */
-button{background:#111827;color:var(--fg);border:1px solid #374151;border-radius:10px;padding:8px 14px;margin:2px;cursor:pointer}
+/* Buttons + checkboxes + selects */
+button{
+  background:#111827;color:var(--fg);
+  border:1px solid #374151;border-radius:10px;
+  padding:8px 14px;margin:2px;cursor:pointer;
+  transition:border-color .2s, box-shadow .2s, background .2s, color .2s, opacity .2s;
+}
 button:hover{border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:not-allowed}
+select{
+  background:#0b1220;color:var(--fg);
+  border:1px solid #334155;border-radius:10px;
+  padding:8px 10px;margin:2px;min-width:240px;
+}
+select:disabled{opacity:.6}
 .controls{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
-.controls .buttons{display:flex;flex-wrap:wrap;gap:6px}
+.controls .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .controls .checkboxes{display:flex;flex-direction:column;gap:6px;padding-left:4px}
+
+/* Torch button ON glow */
+.btn-torch.on{
+  background:#f59e0b;color:#111827;border-color:#f59e0b;
+  box-shadow:0 0 10px #f59e0b80, 0 0 18px #f59e0b50;
+}
 
 /* Glowing checkboxes */
 label.tick{display:flex;align-items:center;gap:8px;font-size:15px;cursor:pointer;user-select:none;transition:color .3s}
@@ -69,10 +87,13 @@ window.ZXING_Reader = new BrowserMultiFormatReader();
 <main>
 
 <div class="controls">
-  <div class="buttons">
+  <div class="row">
+    <select id="cameraSelect" title="Choose camera" disabled>
+      <option>Loading cameras…</option>
+    </select>
     <button id="startBtn">Start</button>
     <button id="stopBtn" disabled>Stop</button>
-    <button id="torchBtn" disabled>Torch</button>
+    <button id="torchBtn" class="btn-torch" disabled title="Torch not available">Torch</button>
     <button id="testBtn">Test System</button>
   </div>
   <div class="checkboxes">
@@ -116,15 +137,20 @@ const BLOCK_MS=5000;
 /* ==== DOM ==== */
 const video=document.getElementById("video"),view=document.getElementById("view"),vctx=view.getContext("2d");
 const overlay=document.getElementById("overlay"),ctx=overlay.getContext("2d");
-const startBtn=document.getElementById("startBtn"),stopBtn=document.getElementById("stopBtn"),torchBtn=document.getElementById("torchBtn"),testBtn=document.getElementById("testBtn");
+const cameraSelect=document.getElementById("cameraSelect");
+const startBtn=document.getElementById("startBtn"),stopBtn=document.getElementById("stopBtn");
+const torchBtn=document.getElementById("torchBtn"),testBtn=document.getElementById("testBtn");
 const beepChk=document.getElementById("beepChk"),vibrateChk=document.getElementById("vibrateChk"),mirrorChk=document.getElementById("mirrorChk"),preventDupesChk=document.getElementById("preventDupesChk");
 const modeBadge=document.getElementById("modeBadge"),summaryLine=document.getElementById("summaryLine");
 const camStatus=document.getElementById("camStatus"),sheetStatus=document.getElementById("sheetStatus"),tgStatus=document.getElementById("tgStatus");
 
 /* ==== STATE ==== */
 let stream=null,track=null,audioCtx,vw=0,vh=0,cropY=0,cropH=0;
+let torchOn=false;
 const codeReader=window.ZXING_Reader;
 const processedAt=new Map();
+/* camera list + selection */
+let devices=[], selectedDeviceId=null;
 
 /* Overlay state */
 let lastDet=null;          // { points:[{x,y},...], color, label }
@@ -143,22 +169,43 @@ function flash(){document.body.style.background="#334";setTimeout(()=>document.b
 function keyFor(m,t){return`${m}||${t}`;}
 function isBlocked(m,t){const k=keyFor(m,t);return(Date.now()-(processedAt.get(k)||0))<BLOCK_MS;}
 
+function populateCameraSelect(list, currentId){
+  cameraSelect.innerHTML="";
+  if(list.length===0){
+    cameraSelect.disabled=true;
+    cameraSelect.innerHTML="<option>No camera found</option>";
+    return;
+  }
+  for(let i=0;i<list.length;i++){
+    const d=list[i];
+    const opt=document.createElement("option");
+    opt.value=d.deviceId;
+    opt.textContent = d.label || `Camera ${i+1}`;
+    cameraSelect.appendChild(opt);
+  }
+  cameraSelect.disabled=false;
+  // select current if provided
+  if(currentId){
+    const found = list.some(d=>d.deviceId===currentId);
+    cameraSelect.value = found ? currentId : list[0].deviceId;
+  }else{
+    cameraSelect.value = list[0].deviceId;
+  }
+  selectedDeviceId = cameraSelect.value;
+}
+
 /* Map ZXing point to overlay coords (account for crop & mirror) */
 function mapPoint(p){
-  // raw camera coords
   let x = p.getX ? p.getX() : (p.x ?? 0);
   let y = p.getY ? p.getY() : (p.y ?? 0);
-  // mirror horizontally on the full sensor width
-  if (mirrorChk.checked) x = vw - x;
-  // shift Y into middle-crop space
-  y -= cropY;
+  if (mirrorChk.checked) x = vw - x;  // mirror horizontally
+  y -= cropY;                          // shift into middle-crop space
   return { x, y };
 }
 
 /* Draw detection box + label */
 function drawDet(det){
   if(!det || !det.points?.length) return;
-  // compute padded rectangle from points
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   for(const p of det.points){
     minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);
@@ -181,29 +228,93 @@ function drawDet(det){
   ctx.fillText(det.label,x,y-8);
 }
 
-/* ==== Camera ==== */
-async function start(){
+/* ==== Camera device management ==== */
+async function listCameras(){
+  const all = await navigator.mediaDevices.enumerateDevices();
+  devices = all.filter(d => d.kind === "videoinput");
+  populateCameraSelect(devices, selectedDeviceId);
+}
+
+/* ==== Start/Stop ==== */
+async function start(withDeviceId){
   stop();
   try{
     setPill(camStatus,"sending","📷 Camera: starting…");
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-    video.srcObject=stream;await video.play();track=stream.getVideoTracks()[0];
-    torchBtn.disabled=!track.getCapabilities?.().torch;
+
+    // Use selected device if available, else environment
+    const deviceId = withDeviceId || selectedDeviceId;
+    const constraints = deviceId
+      ? { video: { deviceId: { exact: deviceId } } }
+      : { video: { facingMode: "environment" } };
+
+    stream=await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject=stream;await video.play();
+    track=stream.getVideoTracks()[0];
+
+    // Torch capability & UI
+    const caps = track.getCapabilities?.() || {};
+    const hasTorch = !!caps.torch;
+    torchBtn.disabled = !hasTorch;
+    torchBtn.title = hasTorch ? "Toggle torch" : "Torch not available";
+    torchOn=false; torchBtn.textContent="Torch"; torchBtn.classList.remove("on");
+
+    // Refresh camera list with real labels after permission
+    await listCameras();
+
+    // Try to select the current camera in dropdown
+    const settings = track.getSettings ? track.getSettings() : {};
+    const curId = settings.deviceId;
+    if (curId) {
+      selectedDeviceId = curId;
+      if (devices.some(d=>d.deviceId===curId)) cameraSelect.value = curId;
+    }
+
     startBtn.disabled=true;stopBtn.disabled=false;
-    vw=video.videoWidth||640;vh=video.videoHeight||480;cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
+
+    vw=video.videoWidth||640;vh=video.videoHeight||480;
+    cropY=Math.floor(vh/3);cropH=Math.floor(vh/3);
     view.width=vw;view.height=cropH;overlay.width=vw;overlay.height=cropH;
+
     startDecode();startRender();
     setPill(camStatus,"success","📷 Camera: on");
-  }catch(e){setPill(camStatus,"error","📷 Camera: error");}
+  }catch(e){
+    console.error(e);
+    setPill(camStatus,"error","📷 Camera: error");
+  }
 }
+
 function stop(){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-  startBtn.disabled=false;stopBtn.disabled=true;torchBtn.disabled=true;
+  startBtn.disabled=false;stopBtn.disabled=true;
   setPill(camStatus,"idle","📷 Camera: idle");
+  // reset torch state & button when stopping
+  torchOn=false; torchBtn.textContent="Torch"; torchBtn.classList.remove("on");
+  torchBtn.disabled = true; torchBtn.title = "Torch not available";
   stopDecode();stopRender();
   vctx.clearRect(0,0,view.width,view.height);ctx.clearRect(0,0,overlay.width,overlay.height);
 }
-async function toggleTorch(){if(!track)return;const caps=track.getCapabilities?.()||{};if(!caps.torch)return;const cur=track.getConstraints().torch;try{await track.applyConstraints({advanced:[{torch:!cur}]});}catch{}}
+
+/* ==== Torch (reliable toggle with own state) ==== */
+async function toggleTorch(){
+  if(!track) return;
+  const caps = track.getCapabilities?.() || {};
+  if(!caps.torch){
+    torchBtn.disabled = true;
+    torchBtn.title = "Torch not available";
+    return;
+  }
+  try{
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    torchBtn.textContent = torchOn ? "Torch Off" : "Torch";
+    torchBtn.classList.toggle("on", torchOn);
+  }catch(e){
+    console.error("Torch toggle error:", e);
+    torchOn = false;
+    torchBtn.textContent = "Torch";
+    torchBtn.classList.remove("on");
+  }
+}
 
 /* ==== Render loop (video + overlay) ==== */
 let renderRunning=false;
@@ -214,7 +325,7 @@ function startRender(){
     requestAnimationFrame(loop);
     if(!vw||!vh) return;
 
-    // draw cropped camera frame
+    // draw cropped camera frame (middle 1/3)
     vctx.save();
     if(mirrorChk.checked){ vctx.translate(view.width,0); vctx.scale(-1,1); }
     vctx.drawImage(video,0,cropY,vw,cropH,0,0,view.width,view.height);
@@ -253,8 +364,8 @@ async function handleDet(text, points){
   const mode = getMode();
   const clean = String(text || "").trim();
 
-  // Map points for overlay
-  const mapped = (points || []).map(mapPoint).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+  // Map points for overlay (adjust for crop & mirror)
+  const mapped = (points || []).map(mapPoint).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
 
   // 🚫 Ignore blank or "0" readings; flash red overlay briefly
   if (!clean || clean === "0") {
@@ -319,7 +430,9 @@ async function sendTg(blob,caption){
     const fd=new FormData();fd.append("chat_id",CHAT_ID);fd.append("caption",caption);fd.append("photo",blob,"frame.png");
     const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,{method:"POST",body:fd});
     const j=await r.json();setPill(tgStatus,j.ok?"success":"error",j.ok?"✈️ Telegram: sent":"✈️ Telegram: error");return j;
-  }catch(e){setPill(tgStatus,"error","✈️ Telegram: network error");return{ok:false,error:e.message};}
+  }catch(e){
+    setPill(tgStatus,"error","✈️ Telegram: network error");return{ok:false,error:e.message};
+  }
 }
 
 /* ==== Test System (no append to sheet) ==== */
@@ -348,7 +461,15 @@ async function updateSummaryFromSheet(id,mode){
 }
 
 /* ==== Bind ==== */
-startBtn.onclick=start;stopBtn.onclick=stop;torchBtn.onclick=toggleTorch;
+cameraSelect.onchange = () => { selectedDeviceId = cameraSelect.value; };
+startBtn.onclick = () => start(selectedDeviceId);   // start with chosen camera (or environment if none)
+stopBtn.onclick = stop;
+torchBtn.onclick = toggleTorch;
+
+/* Prepare initial list (labels may be blank before permission) */
+navigator.mediaDevices?.enumerateDevices?.()
+  .then(()=>listCameras())
+  .catch(()=>{ cameraSelect.innerHTML="<option>Camera permissions required</option>"; });
 </script>
 </body>
 </html>
